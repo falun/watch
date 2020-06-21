@@ -4,13 +4,14 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
-	"io/ioutil"
 	"time"
 )
 
-// Watch exposes two methods for determing when a file's content has changed.
+// Watch exposes two methods for determing when some target's content has changed.
+// In this context "content" is anything that can be rendered into a series of
+// bytes (c.f. Watched.Content).
 type Watch interface {
-	// Updated returns whether or not the file has changed since last called.
+	// Updated returns whether or not the target has changed since last called.
 	// It always returns true on the first call and is not safe for concurrent
 	// use.
 	//
@@ -18,7 +19,7 @@ type Watch interface {
 	Updated() (bool, error)
 
 	// OnInterval starts a go routine that will emit to a channel when the
-	// watched files changes. This will emit at most once per change and checks
+	// watched object changes. This will emit at most once per change and checks
 	// for updates as specified by the provided interval duration.
 	OnInterval(interval time.Duration) (<-chan struct{}, context.CancelFunc)
 }
@@ -41,14 +42,15 @@ type watcher struct {
 	lastHash []byte
 }
 
+var _ Watch = &watcher{}
+
 // File constructs a Watch for a file.
 func File(path string) Watch {
-	return NewWatched(FileTarget(path, true))
+	return New(FileTarget(path, true))
 }
 
-// NewWatched constructs a watch for a target that can be reified into a series
-// of bytes.
-func NewWatched(target Watched) Watch {
+// New constructs a watch for a target.
+func New(target Watched) Watch {
 	return &watcher{target, nil}
 }
 
@@ -58,22 +60,6 @@ func (w *watcher) Updated() (bool, error) {
 		w.lastHash = newHash
 	}
 	return diff, err
-}
-
-func (w *watcher) targetDiff(token []byte) ([]byte, bool, error) {
-	content, err := w.target.Content()
-	if err != nil {
-		return nil, w.target.FailOpen(), fmt.Errorf("Unable to get target content: %v", err.Error())
-	}
-
-	contentSum := md5.Sum(content)
-	// slicify for go
-	hash := contentSum[:]
-
-	if byteSliceMatch(hash, token) {
-		return token, false, nil
-	}
-	return hash, true, nil
 }
 
 func (w *watcher) OnInterval(
@@ -111,25 +97,20 @@ func (w *watcher) OnInterval(
 	return ch, cancelFn
 }
 
-type watchedFile struct {
-	path     string
-	failOpen bool
-}
-
-// FileTarget constructs a Watched wrapper for a file at a given path and allows
-// selection of whether failing to access the file should result in an update
-// signal.
-func FileTarget(path string, failOpen bool) Watched {
-	return watchedFile{path, failOpen}
-}
-
-func (wf watchedFile) FailOpen() bool { return wf.failOpen }
-func (wf watchedFile) Content() ([]byte, error) {
-	configContents, err := ioutil.ReadFile(wf.path)
+func (w *watcher) targetDiff(token []byte) ([]byte, bool, error) {
+	content, err := w.target.Content()
 	if err != nil {
-		return nil, fmt.Errorf("Unable to read config file: %v", err)
+		return nil, w.target.FailOpen(), fmt.Errorf("Unable to get target content: %v", err.Error())
 	}
-	return configContents, nil
+
+	contentSum := md5.Sum(content)
+	// slicify for go
+	hash := contentSum[:]
+
+	if byteSliceMatch(hash, token) {
+		return token, false, nil
+	}
+	return hash, true, nil
 }
 
 func byteSliceMatch(a, b []byte) bool {
